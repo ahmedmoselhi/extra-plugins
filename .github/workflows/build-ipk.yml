@@ -66,6 +66,16 @@ jobs:
               continue
             fi
 
+            if [ ! -f "$plugin/Makefile" ]; then
+              echo "Skipping $plugin (not enabled by configure / missing Makefile)"
+              continue
+            fi
+
+            if ! make -C "$plugin" -n install >/dev/null 2>&1; then
+              echo "Skipping $plugin (no install target)"
+              continue
+            fi
+
             echo "::group::Packaging $plugin"
 
             pkgroot="$(pwd)/.pkg/$plugin"
