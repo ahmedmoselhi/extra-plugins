@@ -7,6 +7,9 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   package:
     runs-on: ubuntu-22.04
@@ -136,3 +139,12 @@ jobs:
           name: enigma2-ipk-packages
           path: ipk-out/*.ipk
           if-no-files-found: error
+      - name: Create release with ipk files
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ipk-build-${{ github.run_number }}
+          name: Ipk build ${{ github.run_number }}
+          body: Automated Enigma2 IPK packages built from commit `${{ github.sha }}`.
+          files: ipk-out/*.ipk
+
