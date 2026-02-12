@@ -1,0 +1,115 @@
+name: build-ipk
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            autopoint \
+            build-essential \
+            gettext \
+            libtool \
+            python3 \
+            python3-dev
+
+      - name: Configure project
+        run: |
+          autoreconf -fi
+          ./configure --prefix=/usr
+
+      - name: Build plugin ipk packages
+        run: |
+          set -euo pipefail
+
+          mkdir -p ipk-out
+
+          plugins=$(find . -mindepth 1 -maxdepth 1 -type d \
+            ! -name '.*' \
+            ! -name 'm4' \
+            ! -name 'CI' \
+            ! -name 'ipk-out' \
+            ! -name 'autom4te.cache' \
+            -printf '%f\n' | sort)
+
+          for plugin in $plugins; do
+            if [ ! -f "$plugin/Makefile.am" ]; then
+              echo "Skipping $plugin (no Makefile.am)"
+              continue
+            fi
+
+            echo "::group::Packaging $plugin"
+
+            pkgroot="$(pwd)/.pkg/$plugin"
+            stagedir="$pkgroot/stage"
+            rm -rf "$pkgroot"
+            mkdir -p "$stagedir"
+
+            make -C "$plugin" install DESTDIR="$stagedir"
+
+            if [ ! -d "$stagedir/usr" ] && [ ! -d "$stagedir/etc" ]; then
+              echo "No installed files for $plugin, skipping"
+              echo "::endgroup::"
+              continue
+            fi
+
+            packagename=$(python3 -c $'import pathlib,re,sys\nfrom xml.etree import ElementTree\nplugin=pathlib.Path(sys.argv[1])\nmeta=plugin/"meta"\nif meta.is_dir():\n    for xml_path in sorted(meta.glob("*.xml")):\n        try:\n            root=ElementTree.parse(xml_path).getroot()\n        except Exception:\n            continue\n        for elem in root.iter("packagename"):\n            if elem.text and elem.text.strip():\n                print(elem.text.strip())\n                raise SystemExit(0)\ncontrol=plugin/"CONTROL"/"control"\nif control.exists():\n    for line in control.read_text(encoding="utf-8",errors="ignore").splitlines():\n        m=re.match(r"^Package:\\s*(\\S+)", line)\n        if m:\n            print(m.group(1))\n            raise SystemExit(0)\nprint(f"enigma2-plugin-{plugin.name.lower()}")' "$plugin")
+
+            version="1.0+git$(date -u +%Y%m%d%H%M%S)"
+            arch="all"
+
+            if [ -f "$plugin/CONTROL/control" ]; then
+              maintainer=$(sed -n 's/^Maintainer:[[:space:]]*//p' "$plugin/CONTROL/control" | head -n1)
+              description=$(sed -n 's/^Description:[[:space:]]*//p' "$plugin/CONTROL/control" | head -n1)
+            else
+              maintainer="OpenVision"
+              description="$plugin plugin"
+            fi
+
+            [ -n "${maintainer:-}" ] || maintainer="OpenVision"
+            [ -n "${description:-}" ] || description="$plugin plugin"
+
+            workdir="$pkgroot/work"
+            mkdir -p "$workdir/control"
+
+            printf '%s\n' \
+              "Package: $packagename" \
+              "Version: $version" \
+              "Architecture: $arch" \
+              "Maintainer: $maintainer" \
+              "Description: $description" \
+              > "$workdir/control/control"
+
+            echo "2.0" > "$workdir/debian-binary"
+
+            tar -C "$workdir/control" -czf "$workdir/control.tar.gz" .
+            tar -C "$stagedir" -czf "$workdir/data.tar.gz" .
+
+            output="ipk-out/${packagename}_${version}_${arch}.ipk"
+            ar r "$output" "$workdir/debian-binary" "$workdir/control.tar.gz" "$workdir/data.tar.gz"
+
+            echo "Created $output"
+            echo "::endgroup::"
+          done
+
+      - name: Upload ipk artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: enigma2-ipk-packages
+          path: ipk-out/*.ipk
+          if-no-files-found: error
